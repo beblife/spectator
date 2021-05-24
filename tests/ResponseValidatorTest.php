@@ -3,8 +3,12 @@
 namespace Spectator\Tests;
 
 use Exception;
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Foundation\Auth\User;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Validation\UnauthorizedException;
 use Spectator\Middleware;
 use Spectator\Spectator;
 use Spectator\SpectatorServiceProvider;
@@ -300,5 +304,32 @@ class ResponseValidatorTest extends TestCase
         $this->getJson('/item')
             ->assertValidRequest()
             ->assertValidResponse();
+    }
+
+    public function test_handles_validation_directly_from_request_path(): void
+    {
+        Spectator::using('Test.v1.json');
+
+        Route::get('/users/{user}', function (string $user) {
+            if($user === 'me') {
+                return response()->json([
+                    'message' => 'You need to authenticate to view this resource.',
+                ], 401);
+            }
+
+            return [
+                'id' => 1,
+                'name' => 'Jane Doe',
+                'email' => 'jane.doe@example.com',
+            ];
+        })->middleware(Middleware::class);
+
+        $this->getJson('/users/me')
+            ->assertValidRequest()
+            ->assertValidResponse(401);
+
+        $this->getJson('/users/1')
+            ->assertValidRequest()
+            ->assertValidResponse(200);
     }
 }
