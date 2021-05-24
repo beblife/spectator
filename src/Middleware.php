@@ -91,9 +91,12 @@ class Middleware
      */
     protected function validate(Request $request, Closure $next)
     {
-        $request_path = $request->route()->uri();
+        $pathItem = $this->pathItem($request);
 
-        $pathItem = $this->pathItem($request_path, $request->method());
+        // Resolve the path from the JsonPointer in the spec document as
+        // this can be either the request's path directly or the uri
+        // that is defined as a route with a dynamic parameter.
+        $request_path = $pathItem->getDocumentPosition()->getPath()[1];
 
         RequestValidator::validate($request, $pathItem, $request->method());
 
@@ -107,36 +110,35 @@ class Middleware
     }
 
     /**
-     * @param $request_path
-     * @param $request_method
+     * @param Request $request
      * @return PathItem
      * @throws InvalidPathException
      * @throws MissingSpecException
      */
-    protected function pathItem($request_path, $request_method): PathItem
+    protected function pathItem(Request $request): PathItem
     {
-        if (! Str::startsWith($request_path, '/')) {
-            $request_path = '/'.$request_path;
-        }
-
         $openapi = $this->spectator->resolve();
 
         $this->version = $openapi->openapi;
 
-        foreach ($openapi->paths as $path => $pathItem) {
-            if ($this->resolvePath($path) === $request_path) {
-                $methods = array_keys($pathItem->getOperations());
+        /** @var PathItem */
+        $pathItem = collect($openapi->paths)->first(function (PathItem $pathItem, string $path) use ($request) {
+            $resolvedPath = $this->resolvePath($path);
 
-                // Check if the method exists for this path, and if so return the full PathItem
-                if (in_array(strtolower($request_method), $methods, true)) {
-                    return $pathItem;
-                }
+            return $resolvedPath === $this->prefixPath($request->path())
+                || $resolvedPath === $this->prefixPath($request->route()->uri());
+        }, function () use ($request) {
+            throw new InvalidPathException("Path [{$request->method()} {$this->prefixPath($request->route()->uri())}] not found in spec.", 404);
+        });
 
-                throw new InvalidPathException("[{$request_method}] not a valid method for [{$request_path}].", 405);
-            }
+        $methods = array_keys($pathItem->getOperations());
+
+        // Check if the method exists for this path, and if so return the full PathItem
+        if (in_array(strtolower($request->method()), $methods, true)) {
+            return $pathItem;
         }
 
-        throw new InvalidPathException("Path [{$request_method} {$request_path}] not found in spec.", 404);
+        throw new InvalidPathException("[{$request->method()}] not a valid method for [{$this->prefixPath($request->route()->uri())}].", 405);
     }
 
     /**
@@ -152,5 +154,18 @@ class Middleware
         }, [$this->spectator->getPathPrefix(), $path]));
 
         return $separator.implode($separator, $parts);
+    }
+
+    /**
+     * @param string $path
+     * @return string
+     */
+    protected function prefixPath($path): string
+    {
+        if (! Str::startsWith($path, '/')) {
+            return '/'. $path;
+        }
+
+        return $path;
     }
 }
